@@ -1,0 +1,134 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>n8n Chat</title>
+
+<style>
+  :root{
+    --bg:#f7f7f9; --fg:#111; --user:#e9edff; --bot:#e9fbe9; --muted:#6b7280;
+    --card:#fff; --border:#e5e7eb; --accent:#2563eb;
+  }
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:2rem;display:flex;justify-content:center}
+  .wrap{width:min(960px,100%)}
+
+  #log{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1rem;height:60vh;overflow:auto;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .msg{padding:.6rem .8rem;border-radius:10px;margin:.45rem 0}
+  .user{background:var(--user)}
+  .bot{background:var(--bot)}
+
+  /* Markdown */
+  .md{line-height:1.5}
+  .md h1,.md h2,.md h3{margin:.5rem 0 .25rem}
+  .md h1{font-size:1.25rem}.md h2{font-size:1.15rem}.md h3{font-size:1.05rem}
+  .md p{margin:.4rem 0}
+  .md code{background:#f3f4f6;padding:.1rem .25rem;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .md pre{background:#0b1020;color:#e5e7eb;padding:.8rem;border-radius:8px;overflow:auto}
+  .md table{border-collapse:collapse;width:100%;margin:.5rem 0;font-size:.95rem}
+  .md th,.md td{border:1px solid var(--border);padding:.4rem .6rem;text-align:left}
+  .md th{background:#f2f5ff}
+
+  form{display:flex;gap:.5rem;margin-top:1rem}
+  input[type="text"]{flex:1;padding:.7rem .8rem;border:1px solid var(--border);border-radius:10px;background:#fff}
+  button{padding:.7rem 1rem;border:none;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer}
+  button:disabled{opacity:.6;cursor:not-allowed}
+</style>
+
+<div class="wrap">
+  <div id="log"></div>
+  <form id="f">
+    <input id="m" type="text" placeholder="Message…" autocomplete="off" />
+    <button>Send</button>
+  </form>
+</div>
+
+<!-- Markdown parser + sanitizer -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+
+<script>
+const API = "http://localhost:5678/webhook/test"; // ou /webhook-test/chat
+const SESSION_ID = localStorage.sid || (localStorage.sid = crypto.randomUUID());
+const API_KEY = "<OPTIONAL-KEY>";
+
+const log = document.getElementById('log');
+const form = document.getElementById('f'), input = document.getElementById('m');
+
+// marked config
+marked.setOptions({ gfm:true, breaks:true });
+
+// Nettoyage/normalisation d’une réponse potentiellement échappée par JSON / n8n
+function normalizeReply(x){
+  // supporte objets {reply: "..."} ou {..., text:"..."} ou string direct
+  let s = x?.reply ?? x?.text ?? x?.message ?? x ?? "";
+  s = String(s);
+
+  // si la réponse contient beaucoup de séquences échappées (\\n, \\"), on “dé-échappe”
+  if (/\\n|\\t|\\"|\\\\/g.test(s)) {
+    // remplacer les guillemets échappés en vrais guillemets
+    s = s.replace(/\\"/g, '"');
+    // transformer les retours à la ligne littéraux en vrais \n
+    s = s.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    // éviter de doubler les backslashes restants
+    s = s.replace(/\\\\/g, '\\');
+  }
+
+  // guillemets typographiques → guillemets standards pour ne pas casser le markdown
+  s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+
+  // certaines sources renvoient &ast; &amp; etc.
+  const txt = document.createElement('textarea');
+  txt.innerHTML = s;
+  s = txt.value;
+
+  // trim soft
+  return s.trim();
+}
+
+function add(role, content, {markdown=false} = {}){
+  const div = document.createElement('div');
+  div.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+
+  if (markdown) {
+    const html = DOMPurify.sanitize(marked.parse(content));
+    div.innerHTML = `<div class="md">${html}</div>`;
+  } else {
+    div.textContent = content;
+  }
+
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+form.onsubmit = async (e)=>{
+  e.preventDefault();
+  const message = input.value.trim();
+  if (!message) return;
+
+  add('user', message);
+  input.value = '';
+  form.querySelector('button').disabled = true;
+
+  try {
+    const res = await fetch(API, {
+      method:'POST',
+      headers:{'content-type':'application/json','x-api-key':API_KEY},
+      body: JSON.stringify({ session_id: SESSION_ID, message })
+    });
+    const raw = await res.json().catch(()=>({error:'Bad JSON'}));
+
+    if (raw.error || res.status >= 400) {
+      add('bot', `⚠️ ${raw.error || res.statusText}`);
+      return;
+    }
+
+    const reply = normalizeReply(raw);
+
+    // On force le rendu markdown (titres, **gras**, tableaux, etc.)
+    add('bot', reply || '(no reply)', { markdown: true });
+
+  } catch (err) {
+    add('bot', `⚠️ ${err.message || 'Network error'}`);
+  } finally {
+    form.querySelector('button').disabled = false;
+  }
+};
+</script>
